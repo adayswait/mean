@@ -90,6 +90,7 @@ include_directories(
     deps/url-parser/
     deps/nghttp2/include/
     deps/nghttpd/include/
+    include/
     #deps/mbedtls/
 )
 
@@ -143,11 +144,12 @@ set(MEAN_SRC
     deps/nghttpd/app_helper.cc
     deps/nghttpd/nghttp2_gzip.c
 
-    deps/nghttpd/nghttpd.cc
     deps/nghttpd/tls.cc
-    deps/nghttpd/HttpServer.cc
-)
 
+    src/http_server.cc
+    src/main.cc
+)
+add_definitions("-Wall -g")
 add_executable(mean ${MEAN_SRC})
 
 target_compile_definitions(mean
