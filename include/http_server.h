@@ -103,6 +103,11 @@ enum class HTTP1_PARSE_STATE
   ON_TRUNK_COMPLETE
 };
 
+enum class HTTP1_STREAM_ID
+{
+  DEFAULT
+};
+
 class Http2Handler;
 
 struct FileEntry {
@@ -152,6 +157,7 @@ struct RequestHeader {
 };
 
 struct Stream {
+  Stream(Http2Handler *handler, int32_t stream_id);
   BlockAllocator balloc;
   RequestHeader header;
   Http2Handler *handler;
@@ -165,7 +171,10 @@ struct Stream {
   size_t header_buffer_size;
   int32_t stream_id;
   bool echo_upload;
-  Stream(Http2Handler *handler, int32_t stream_id);
+
+  // support http/1
+  llhttp_t *http_parser = nullptr;
+  HTTP1_PARSE_STATE http_parse_state_ = HTTP1_PARSE_STATE::UNDEF;
   ~Stream();
 };
 
@@ -180,7 +189,7 @@ public:
   void start_settings_timer();
   int on_read();
   int on_write();
-  int on_http1_parse(llhttp_t *llptr,
+  int on_http1_parse_callback(llhttp_t *llptr,
                      HTTP1_PARSE_STATE,
                      const char *data = nullptr,
                      size_t length = 0);
@@ -239,8 +248,6 @@ private:
   nghttp2_session *session_;
   Sessions *sessions_;
   SSL *ssl_;
-  llhttp_t *http_parser_ = nullptr;
-  HTTP1_PARSE_STATE http_parse_state_ = HTTP1_PARSE_STATE::UNDEF;
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
   int fd_;

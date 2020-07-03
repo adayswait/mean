@@ -418,7 +418,6 @@ public:
   const HttpServer *get_server() const { return sv_; }
   bool handlers_empty() const { return handlers_.empty(); }
   llhttp_settings_t * get_llhttp_settings() { return llhttp_settings_;} 
-
 private:
   std::set<Http2Handler *> handlers_;
   // cache for file descriptors to read file.
@@ -429,9 +428,9 @@ private:
   const Config *config_;
   SSL_CTX *ssl_ctx_;
   nghttp2_session_callbacks *callbacks_;
-  llhttp_settings_t * llhttp_settings_;
   nghttp2_option *option_;
   ev_timer release_fd_timer_;
+  llhttp_settings_t * llhttp_settings_;
   int64_t next_session_id_;
   ev_tstamp tstamp_cached_;
   std::string cached_date_;
@@ -462,10 +461,15 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
       stream_id(stream_id),
       echo_upload(false) {
   auto config = handler->get_config();
-  ev_timer_init(&rtimer, stream_timeout_cb, 0., config->stream_read_timeout);
-  ev_timer_init(&wtimer, stream_timeout_cb, 0., config->stream_write_timeout);
+  ev_timer_init(&rtimer, stream_timeout_cb, 0.0, config->stream_read_timeout);
+  ev_timer_init(&wtimer, stream_timeout_cb, 0.0, config->stream_write_timeout);
   rtimer.data = this;
   wtimer.data = this;
+
+  http_parser = static_cast<llhttp_t *>(malloc(sizeof(llhttp_t)));
+  llhttp_init(http_parser, HTTP_BOTH,
+              handler->get_sessions()->get_llhttp_settings());
+  http_parser->data = static_cast<void *>(this);
 }
 
 Stream::~Stream() {
@@ -486,6 +490,7 @@ Stream::~Stream() {
   auto loop = handler->get_loop();
   ev_timer_stop(loop, &rtimer);
   ev_timer_stop(loop, &wtimer);
+  free(http_parser);
 }
 
 namespace {
@@ -554,14 +559,19 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
   auto loop = sessions_->get_loop();
   ev_io_start(loop, &rev_);
   bool no_tls = get_config()->no_tls;
-  if (ssl && !no_tls) {
+  if (ssl && !no_tls)
+  {
     SSL_set_accept_state(ssl);
     read_ = &Http2Handler::tls_handshake;
     write_ = &Http2Handler::tls_handshake;
-  } else {
-    http_parser_ = static_cast<llhttp_t *>(malloc(sizeof(llhttp_t)));
-    http_parser_->data = static_cast<void *>(this);
-    llhttp_init(http_parser_, HTTP_BOTH, sessions_->get_llhttp_settings());
+  }
+  else
+  {
+    auto stream = std::make_unique<Stream>(this, static_cast<int32_t>(
+                                                     HTTP1_STREAM_ID::DEFAULT));
+    add_stream_read_timeout(stream.get());
+    this->add_stream(static_cast<int32_t>(HTTP1_STREAM_ID::DEFAULT),
+                     std::move(stream));
     read_ = &Http2Handler::read_clear;
     write_ = &Http2Handler::write_clear;
   }
@@ -584,7 +594,6 @@ Http2Handler::~Http2Handler() {
   }
   shutdown(fd_, SHUT_WR);
   close(fd_);
-  free(http_parser_);
 }
 
 void Http2Handler::remove_self() { sessions_->remove_handler(this); }
@@ -673,25 +682,27 @@ int Http2Handler::read_clear() {
   }
   else /* http/1 */
   {
-    if (http_parser_)
+    auto stream = this->get_stream(static_cast<int32_t>(
+        HTTP1_STREAM_ID::DEFAULT));
+    if (!stream || !stream->http_parser)
     {
-      enum llhttp_errno err = llhttp_execute(http_parser_,
-                                             (const char *)(buf.data()),
-                                             nread);
-      if (err == HPE_OK)
-      {
-        /* Successfully parsed! */
-        fprintf(stderr, "==Parse ok\n");
-        return 0;
-      }
-      else
-      {
-        fprintf(stderr, "==Parse error: %s %s\n", llhttp_errno_name(err),
-                http_parser_->reason);
-        return -1;
-      }
+      return -1;
     }
-    return -1;
+    enum llhttp_errno err = llhttp_execute(stream->http_parser,
+                                           (const char *)(buf.data()),
+                                           nread);
+    if (err == HPE_OK)
+    {
+      /* Successfully parsed! */
+      fprintf(stderr, "==Parse ok\n");
+      return 0;
+    }
+    else
+    {
+      fprintf(stderr, "==Parse error: %s %s\n", llhttp_errno_name(err),
+              stream->http_parser->reason);
+      return -1;
+    }
   }
 }
 
@@ -871,12 +882,51 @@ int Http2Handler::on_read() { return read_(*this); }
 
 int Http2Handler::on_write() { return write_(*this); }
 
-int Http2Handler::on_http1_parse(llhttp_t *llptr,
-                     HTTP1_PARSE_STATE,
+int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
+                     HTTP1_PARSE_STATE state,
                      const char *data,
                      size_t length)
 {
-  
+  std::cout<<"state"<<int(state);
+  printf(":%.*s\n", length, data);
+  // switch (token) {
+  // case http2::HD__METHOD:
+  //   header.method = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.method = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD__SCHEME:
+  //   header.scheme = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.scheme = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD__AUTHORITY:
+  //   header.authority = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.authority = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD_HOST:
+  //   header.host = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.host = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD__PATH:
+  //   header.path = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.path = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD_IF_MODIFIED_SINCE:
+  //   header.ims = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.ims = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // case http2::HD_EXPECT:
+  //   header.expect = StringRef{valuebuf.base, valuebuf.len};
+  //   header.rcbuf.expect = value;
+  //   nghttp2_rcbuf_incref(value);
+  //   break;
+  // }
+  return 0;
 }
 
 int Http2Handler::connection_made() {
@@ -1789,61 +1839,61 @@ namespace {
 int http1_on_header_field_callback(llhttp_t *llptr,
                                   const char *data, size_t length)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_HEADER_FIELD,
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_HEADER_FIELD,
                             data, length);
 }
 int http1_on_header_value_callback(llhttp_t *llptr,
                                   const char *data, size_t length)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_HEADER_VALUE,
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_HEADER_VALUE,
                             data, length);
 }
 int http1_on_url_callback(llhttp_t *llptr,
                           const char *data, size_t length)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_URL,
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_URL,
                             data, length);
 }
 int http1_on_status_callback(llhttp_t *llptr,
                              const char *data, size_t length)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_STATUS,
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_STATUS,
                             data, length);
 }
 int http1_on_body_callback(llhttp_t *llptr, const char *data, size_t length)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_BODY, data, length);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_BODY, data, length);
 }
 int http1_on_message_complete_callback(llhttp_t *llptr)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_MESSAGE_COMPLETE);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_MESSAGE_COMPLETE);
 }
 
 int http1_on_message_begin_callback(llhttp_t *llptr)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN);
 }
 int http1_on_headers_complete_callback(llhttp_t *llptr)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_HEADERS_COMPLETE);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_HEADERS_COMPLETE);
 }
 int http1_on_trunk_header_callback(llhttp_t *llptr)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_TRUNK_HEADER);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_TRUNK_HEADER);
 }
 int http1_on_chunk_complete_callback(llhttp_t *llptr)
 {
-  Http2Handler *hd = static_cast<Http2Handler *>(llptr->data);
-  return hd->on_http1_parse(llptr, HTTP1_PARSE_STATE::ON_TRUNK_COMPLETE);
+  Http2Handler *hd = static_cast<Stream *>(llptr->data)->handler;
+  return hd->on_http1_parse_callback(llptr, HTTP1_PARSE_STATE::ON_TRUNK_COMPLETE);
 }
 } // namespace
 
