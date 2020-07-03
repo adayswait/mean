@@ -95,7 +95,6 @@ enum class HTTP1_PARSE_STATE
   ON_STATUS,
   ON_HEADER_FIELD,
   ON_HEADER_VALUE,
-  ON_HEADER_COMPLETE,
   ON_HEADERS_COMPLETE,
   ON_BODY,
   ON_MESSAGE_COMPLETE,
@@ -174,7 +173,10 @@ struct Stream {
 
   // support http/1
   llhttp_t *http_parser = nullptr;
-  HTTP1_PARSE_STATE http_parse_state_ = HTTP1_PARSE_STATE::UNDEF;
+  std::map<std::string,std::string> header_fields;
+  HTTP1_PARSE_STATE http_parse_state = HTTP1_PARSE_STATE::UNDEF;
+  std::string pending_str;
+  std::string pending_field;
   ~Stream();
 };
 

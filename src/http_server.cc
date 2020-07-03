@@ -459,17 +459,23 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
       body_offset(0),
       header_buffer_size(0),
       stream_id(stream_id),
-      echo_upload(false) {
+      echo_upload(false)
+{
   auto config = handler->get_config();
-  ev_timer_init(&rtimer, stream_timeout_cb, 0.0, config->stream_read_timeout);
-  ev_timer_init(&wtimer, stream_timeout_cb, 0.0, config->stream_write_timeout);
-  rtimer.data = this;
-  wtimer.data = this;
-
-  http_parser = static_cast<llhttp_t *>(malloc(sizeof(llhttp_t)));
-  llhttp_init(http_parser, HTTP_BOTH,
-              handler->get_sessions()->get_llhttp_settings());
-  http_parser->data = static_cast<void *>(this);
+  if (!config->no_tls)
+  {
+    ev_timer_init(&rtimer, stream_timeout_cb, 0.0, config->stream_read_timeout);
+    ev_timer_init(&wtimer, stream_timeout_cb, 0.0, config->stream_write_timeout);
+    rtimer.data = this;
+    wtimer.data = this;
+  }
+  else
+  {
+    http_parser = static_cast<llhttp_t *>(malloc(sizeof(llhttp_t)));
+    llhttp_init(http_parser, HTTP_BOTH,
+                handler->get_sessions()->get_llhttp_settings());
+    http_parser->data = static_cast<void *>(this);
+  }
 }
 
 Stream::~Stream() {
@@ -487,10 +493,16 @@ Stream::~Stream() {
   nghttp2_rcbuf_decref(rcbuf.ims);
   nghttp2_rcbuf_decref(rcbuf.expect);
 
-  auto loop = handler->get_loop();
-  ev_timer_stop(loop, &rtimer);
-  ev_timer_stop(loop, &wtimer);
-  free(http_parser);
+  if (!handler->get_config()->no_tls)
+  {
+    auto loop = handler->get_loop();
+    ev_timer_stop(loop, &rtimer);
+    ev_timer_stop(loop, &wtimer);
+  }
+  else
+  {
+    free(http_parser);
+  }
 }
 
 namespace {
@@ -548,7 +560,7 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
       data_pending_(nullptr),
       data_pendinglen_(0),
       fd_(fd) {
-  ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
+  ev_timer_init(&settings_timerev_, settings_timeout_cb, 10.0, 0.0);
   ev_io_init(&wev_, writecb, fd, EV_WRITE);
   ev_io_init(&rev_, readcb, fd, EV_READ);
 
@@ -569,7 +581,6 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
   {
     auto stream = std::make_unique<Stream>(this, static_cast<int32_t>(
                                                      HTTP1_STREAM_ID::DEFAULT));
-    add_stream_read_timeout(stream.get());
     this->add_stream(static_cast<int32_t>(HTTP1_STREAM_ID::DEFAULT),
                      std::move(stream));
     read_ = &Http2Handler::read_clear;
@@ -694,12 +705,11 @@ int Http2Handler::read_clear() {
     if (err == HPE_OK)
     {
       /* Successfully parsed! */
-      fprintf(stderr, "==Parse ok\n");
       return 0;
     }
     else
     {
-      fprintf(stderr, "==Parse error: %s %s\n", llhttp_errno_name(err),
+      fprintf(stderr, "llhttp parse error: %s %s\n", llhttp_errno_name(err),
               stream->http_parser->reason);
       return -1;
     }
@@ -882,51 +892,120 @@ int Http2Handler::on_read() { return read_(*this); }
 
 int Http2Handler::on_write() { return write_(*this); }
 
-int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
-                     HTTP1_PARSE_STATE state,
-                     const char *data,
-                     size_t length)
+void prepare_response(Stream *stream)
 {
-  std::cout<<"state"<<int(state);
-  printf(":%.*s\n", length, data);
-  // switch (token) {
-  // case http2::HD__METHOD:
-  //   header.method = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.method = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD__SCHEME:
-  //   header.scheme = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.scheme = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD__AUTHORITY:
-  //   header.authority = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.authority = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD_HOST:
-  //   header.host = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.host = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD__PATH:
-  //   header.path = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.path = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD_IF_MODIFIED_SINCE:
-  //   header.ims = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.ims = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // case http2::HD_EXPECT:
-  //   header.expect = StringRef{valuebuf.base, valuebuf.len};
-  //   header.rcbuf.expect = value;
-  //   nghttp2_rcbuf_incref(value);
-  //   break;
-  // }
-  return 0;
+  auto wb = stream->handler->get_wb();
+  wb->write("mean", 4);
+}
+
+int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
+                                          HTTP1_PARSE_STATE state,
+                                          const char *data,
+                                          size_t length)
+{
+  printf("state : %d value : %.*s\n", int(state), int(length), data);
+  std::map<std::string, std::string>::reverse_iterator iter;
+
+  Stream *stream = static_cast<Stream *>(llptr->data);
+  switch (state)
+  {
+
+  case HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN:
+    if (stream->http_parse_state != HTTP1_PARSE_STATE::UNDEF)
+    {
+      return -1;
+    }
+    stream->http_parse_state = HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN;
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_URL:
+    if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN)
+    {
+      stream->pending_str = std::string(data, length);
+      stream->http_parse_state = HTTP1_PARSE_STATE::ON_URL;
+    }
+    else if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_URL)
+    {
+      stream->pending_str += (std::string(data, length));
+    }
+    else
+    {
+      return -1;
+    }
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_STATUS:
+    if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_URL)
+    {
+      stream->header.path = StringRef{data, length};
+    }
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_HEADER_FIELD:
+    if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_URL)
+    {
+      stream->header.path = StringRef{data, length};
+      stream->http_parse_state = HTTP1_PARSE_STATE::ON_HEADER_FIELD;
+      stream->pending_field = std::string(data, length);
+    }
+    else if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_HEADER_FIELD)
+    {
+      stream->pending_field += (std::string(data, length));
+    }
+    else if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_HEADER_VALUE)
+    {
+      stream->header_fields[stream->pending_field] = stream->pending_str;
+      stream->http_parse_state = HTTP1_PARSE_STATE::ON_HEADER_FIELD;
+      stream->pending_field = std::string(data, length);
+    }
+    else
+    {
+      return -1;
+    }
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_HEADER_VALUE:
+    if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_HEADER_FIELD)
+    {
+      stream->http_parse_state = HTTP1_PARSE_STATE::ON_HEADER_VALUE;
+      stream->pending_str = std::string(data, length);
+    }
+    else if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_HEADER_VALUE)
+    {
+      stream->pending_str += std::string(data, length);
+    }
+    else
+    {
+      return -1;
+    }
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_HEADERS_COMPLETE:
+    if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_HEADER_VALUE)
+    {
+      stream->http_parse_state = HTTP1_PARSE_STATE::ON_HEADERS_COMPLETE;
+      stream->header_fields[stream->pending_field] = stream->pending_str;
+    }
+    else
+    {
+      return -1;
+    }
+    for (iter = stream->header_fields.rbegin();
+         iter != stream->header_fields.rend();
+         iter++)
+    {
+      std::cout << iter->first << " : " << iter->second << std::endl;
+    }
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_BODY:
+    break;
+  case HTTP1_PARSE_STATE::ON_MESSAGE_COMPLETE:
+    stream->http_parse_state = HTTP1_PARSE_STATE::ON_MESSAGE_COMPLETE;
+    prepare_response(stream);
+    return HPE_OK;
+  case HTTP1_PARSE_STATE::ON_TRUNK_HEADER:
+    break;
+  case HTTP1_PARSE_STATE::ON_TRUNK_COMPLETE:
+    break;
+  default:
+    return -1;
+  }
+  return HPE_OK;
 }
 
 int Http2Handler::connection_made() {
@@ -1488,6 +1567,7 @@ void prepare_response(Stream *stream, Http2Handler *hd,
   hd->submit_file_response(StringRef::from_lit("200"), stream, file_ent->mtime,
                            file_ent->length, file_ent->content_type, &data_prd);
 }
+
 } // namespace
 
 namespace {
