@@ -735,8 +735,12 @@ int Http2Handler::write_clear() {
       continue;
     }
     wb_.reset();
-    if (fill_wb() != 0) {
-      return -1;
+    if (!get_config()->no_tls)
+    {
+      if (fill_wb() != 0)
+      {
+        return -1;
+      }
     }
     if (wb_.rleft() == 0) {
       break;
@@ -749,9 +753,17 @@ int Http2Handler::write_clear() {
     ev_io_start(loop, &wev_);
   }
 
-  if (nghttp2_session_want_read(session_) == 0 &&
-      nghttp2_session_want_write(session_) == 0 && wb_.rleft() == 0) {
-    return -1;
+  if (!get_config()->no_tls)
+  {
+    if (nghttp2_session_want_read(session_) == 0 &&
+        nghttp2_session_want_write(session_) == 0 && wb_.rleft() == 0)
+    {
+      return -1;
+    }
+  }
+  else
+  {
+    close(fd_);
   }
 
   return 0;
@@ -892,10 +904,76 @@ int Http2Handler::on_read() { return read_(*this); }
 
 int Http2Handler::on_write() { return write_(*this); }
 
+struct response_status_code
+{
+  char *code;
+  char *info_status;
+};
+struct response_status_code response_codes_informations[38] = {
+    {"100", "Continue"},
+    {"101", "Switching Protocols"},
+    {"200", "OK"},
+    {"201", "Created"},
+    {"202", "Accepted"},
+    {"203", "Non-Authoritative Information"},
+    {"204", "No Content"},
+    {"205", "Reset Content"},
+    {"206", "Partial Content"},
+    {"300", "Multiple Choices"},
+    {"301", "Moved Permanently"},
+    {"304", "Not Modified"},
+    {"305", "Use Proxy"},
+    {"307", "Temporary Redirect"},
+    {"400", "Bad Request"},
+    {"401", "Unauthorized"},
+    {"402", "Payment Required"},
+    {"403", "Forbidden"},
+    {"404", "Not Found"},
+    {"405", "Method Not Allowed"},
+    {"406", "Not Acceptable"},
+    {"407", "Proxy Authentication Required"},
+    {"408", "Request Time-out"},
+    {"409", "Conflict"},
+    {"410", "Gone"},
+    {"411", "Length Required"},
+    {"412", "Precondition Failed"},
+    {"413", "Request Entity Too Large"},
+    {"414", "Request-URI Too Large"},
+    {"415", "Unsupported Media Type"},
+    {"416", "Requested range not satisfiable"},
+    {"417", "Expectation Failed"},
+    {"500", "Internal Server Error"},
+    {"501", "Not Implemented"},
+    {"502", "Bad Gateway"},
+    {"503", "Service Unavailable"},
+    {"504", "Gateway Time-out"},
+    {"505", "HTTP Version not supported"}};
+
+char *make_response(int status_code,const char *body)
+{
+  size_t size_content = (body != NULL) ? strlen(body) : 0;
+  char *header_response = static_cast<char *>(
+      malloc(256 + size_content * sizeof(char)));
+  memset(header_response, 0, 256 + size_content);
+  struct response_status_code code_infos = response_codes_informations[status_code];
+
+  sprintf(header_response, "HTTP/1.1 %s %s\r\n\
+            Connection: close\r\n\
+            Content-Type: text/plain\r\n\
+            Content-Length: %zu\r\n\r\n%s",
+          code_infos.code, code_infos.info_status, size_content, body);
+  return header_response;
+}
+
 void prepare_response(Stream *stream)
 {
   auto wb = stream->handler->get_wb();
-  wb->write("mean", 4);
+
+  auto res_str = "<html><head><title>mean</title></head><body><h1>Hello world</h1></body></html>";
+  auto res = make_response(2, res_str);
+
+  wb->write(res, strlen(res));
+  stream->handler->write_clear();
 }
 
 int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
