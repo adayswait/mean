@@ -459,7 +459,9 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
       body_offset(0),
       header_buffer_size(0),
       stream_id(stream_id),
-      echo_upload(false)
+      echo_upload(false),
+      http_parser(nullptr),
+      http_parse_state(HTTP1_PARSE_STATE::UNDEF)
 {
   auto config = handler->get_config();
   if (!config->no_tls)
@@ -704,7 +706,6 @@ int Http2Handler::read_clear() {
                                            nread);
     if (err == HPE_OK)
     {
-      /* Successfully parsed! */
       return 0;
     }
     else
@@ -747,9 +748,16 @@ int Http2Handler::write_clear() {
     }
   }
 
-  if (wb_.rleft() == 0) {
+  if (wb_.rleft() == 0)
+  {
     ev_io_stop(loop, &wev_);
-  } else {
+    if (get_config()->no_tls)
+    {
+      close(fd_);
+    }
+  }
+  else
+  {
     ev_io_start(loop, &wev_);
   }
 
@@ -760,10 +768,6 @@ int Http2Handler::write_clear() {
     {
       return -1;
     }
-  }
-  else
-  {
-    close(fd_);
   }
 
   return 0;
@@ -904,64 +908,19 @@ int Http2Handler::on_read() { return read_(*this); }
 
 int Http2Handler::on_write() { return write_(*this); }
 
-struct response_status_code
-{
-  char *code;
-  char *info_status;
-};
-struct response_status_code response_codes_informations[38] = {
-    {"100", "Continue"},
-    {"101", "Switching Protocols"},
-    {"200", "OK"},
-    {"201", "Created"},
-    {"202", "Accepted"},
-    {"203", "Non-Authoritative Information"},
-    {"204", "No Content"},
-    {"205", "Reset Content"},
-    {"206", "Partial Content"},
-    {"300", "Multiple Choices"},
-    {"301", "Moved Permanently"},
-    {"304", "Not Modified"},
-    {"305", "Use Proxy"},
-    {"307", "Temporary Redirect"},
-    {"400", "Bad Request"},
-    {"401", "Unauthorized"},
-    {"402", "Payment Required"},
-    {"403", "Forbidden"},
-    {"404", "Not Found"},
-    {"405", "Method Not Allowed"},
-    {"406", "Not Acceptable"},
-    {"407", "Proxy Authentication Required"},
-    {"408", "Request Time-out"},
-    {"409", "Conflict"},
-    {"410", "Gone"},
-    {"411", "Length Required"},
-    {"412", "Precondition Failed"},
-    {"413", "Request Entity Too Large"},
-    {"414", "Request-URI Too Large"},
-    {"415", "Unsupported Media Type"},
-    {"416", "Requested range not satisfiable"},
-    {"417", "Expectation Failed"},
-    {"500", "Internal Server Error"},
-    {"501", "Not Implemented"},
-    {"502", "Bad Gateway"},
-    {"503", "Service Unavailable"},
-    {"504", "Gateway Time-out"},
-    {"505", "HTTP Version not supported"}};
-
 char *make_response(int status_code,const char *body)
 {
   size_t size_content = (body != NULL) ? strlen(body) : 0;
   char *header_response = static_cast<char *>(
       malloc(256 + size_content * sizeof(char)));
   memset(header_response, 0, 256 + size_content);
-  struct response_status_code code_infos = response_codes_informations[status_code];
 
-  sprintf(header_response, "HTTP/1.1 %s %s\r\n\
+  sprintf(header_response, "HTTP/1.1 %d %s\r\n\
             Connection: close\r\n\
             Content-Type: text/plain\r\n\
             Content-Length: %zu\r\n\r\n%s",
-          code_infos.code, code_infos.info_status, size_content, body);
+          status_code, http2::get_reason_phrase(status_code).c_str(), 
+          size_content, body);
   return header_response;
 }
 
@@ -970,10 +929,11 @@ void prepare_response(Stream *stream)
   auto wb = stream->handler->get_wb();
 
   auto res_str = "<html><head><title>mean</title></head><body><h1>Hello world</h1></body></html>";
-  auto res = make_response(2, res_str);
+  auto res = make_response(200, res_str);
 
   wb->write(res, strlen(res));
   stream->handler->write_clear();
+  free(res);
 }
 
 int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
@@ -981,18 +941,17 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
                                           const char *data,
                                           size_t length)
 {
-  printf("state : %d value : %.*s\n", int(state), int(length), data);
   std::map<std::string, std::string>::reverse_iterator iter;
-
   Stream *stream = static_cast<Stream *>(llptr->data);
+  if (stream->handler->get_config()->verbose)
+  {
+    printf("state : %d value : %.*s\n", int(state), int(length), data);
+    fflush(stdout);
+  }
+
   switch (state)
   {
-
   case HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN:
-    if (stream->http_parse_state != HTTP1_PARSE_STATE::UNDEF)
-    {
-      return -1;
-    }
     stream->http_parse_state = HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN;
     return HPE_OK;
   case HTTP1_PARSE_STATE::ON_URL:
@@ -1063,11 +1022,14 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
     {
       return -1;
     }
-    for (iter = stream->header_fields.rbegin();
-         iter != stream->header_fields.rend();
-         iter++)
+    if (stream->handler->get_config()->verbose)
     {
-      std::cout << iter->first << " : " << iter->second << std::endl;
+      for (iter = stream->header_fields.rbegin();
+           iter != stream->header_fields.rend();
+           iter++)
+      {
+        std::cout << iter->first << " : " << iter->second << std::endl;
+      }
     }
     return HPE_OK;
   case HTTP1_PARSE_STATE::ON_BODY:
@@ -1079,6 +1041,8 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
   case HTTP1_PARSE_STATE::ON_TRUNK_HEADER:
     break;
   case HTTP1_PARSE_STATE::ON_TRUNK_COMPLETE:
+
+    stream->http_parse_state = HTTP1_PARSE_STATE::UNDEF;
     break;
   default:
     return -1;

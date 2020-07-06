@@ -172,9 +172,9 @@ struct Stream {
   bool echo_upload;
 
   // support http/1
-  llhttp_t *http_parser = nullptr;
+  llhttp_t *http_parser;
   std::map<std::string,std::string> header_fields;
-  HTTP1_PARSE_STATE http_parse_state = HTTP1_PARSE_STATE::UNDEF;
+  HTTP1_PARSE_STATE http_parse_state;
   std::string pending_str;
   std::string pending_field;
   ~Stream();
