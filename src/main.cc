@@ -46,7 +46,7 @@
 #include <nghttp2/nghttp2.h>
 
 #include "app_helper.h"
-#include "http_server.h"
+#include "server.h"
 #include "util.h"
 #include "tls.h"
 

@@ -22,8 +22,8 @@
  * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#ifndef HTTP_SERVER_H
-#define HTTP_SERVER_H
+#ifndef __MEAN_SERVER_H__
+#define __MEAN_SERVER_H__
 
 #include "nghttp2_config.h"
 
@@ -35,7 +35,9 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <memory>
+#include <functional>
 
 #include <openssl/ssl.h>
 
@@ -260,6 +262,42 @@ struct StatusPage {
   FileEntry file_ent;
 };
 
+typedef struct
+{
+  int state_code;
+  std::string body;
+} RouterRet;
+
+using router_callback = std::function<
+    RouterRet(Stream *, Http2Handler *)>;
+
+
+class Router
+{
+public:
+  Router();
+  router_callback operator[](std::string path)
+  {
+    auto search = _routing_table.find(path);
+    if (search != _routing_table.end())
+    {
+      return _routing_table[path];
+    }
+    return route404;
+  }
+
+private:
+  void add(std::string path, router_callback handler)
+  {
+    _routing_table[path] = handler;
+  }
+  std::unordered_map<std::string, router_callback> _routing_table;
+  router_callback route404 = [](Stream *,
+                                Http2Handler *) -> RouterRet {
+    return { 404, http2::get_reason_phrase(404).c_str() };
+  };
+};
+
 class HttpServer {
 public:
   HttpServer(const Config *config);
@@ -267,10 +305,12 @@ public:
   int run();
   const Config *get_config() const;
   const StatusPage *get_status_page(int status) const;
+  const Router& get_router() const;
 
 private:
   std::vector<StatusPage> status_pages_;
   const Config *config_;
+  const Router router_;
 };
 
 ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
@@ -279,4 +319,4 @@ ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
 
 } // namespace nghttp2
 
-#endif // HTTP_SERVER_H
+#endif // __MEAN_SERVER_H__

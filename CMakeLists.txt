@@ -1,8 +1,8 @@
 cmake_minimum_required (VERSION 3.8)
 
 set(PROJECT_NAME mean)
-set(RELEASE_DATE 2020-07-01)
-set(PROJECT_VERSION "0.0.1")
+set(RELEASE_DATE 2020-07-06)
+set(PROJECT_VERSION "0.0.2")
 set(PROJECT_DESC "a mean server")
 set(PROJECT_URL "https://github.com/adayswait")
 set(PROJECT_ISSUES_URL "https://github.com/adayswait")
@@ -146,8 +146,9 @@ set(MEAN_SRC
 
     deps/nghttpd/tls.cc
 
-    src/http_server.cc
+    src/server.cc
     src/main.cc
+    src/router.cc
 )
 add_definitions("-Wall -g")
 add_executable(mean ${MEAN_SRC})

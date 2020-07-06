@@ -22,7 +22,7 @@
  * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "http_server.h"
+#include "server.h"
 
 #include <sys/stat.h>
 #ifdef HAVE_SYS_SOCKET_H
@@ -927,10 +927,9 @@ char *make_response(int status_code,const char *body)
 void prepare_response(Stream *stream)
 {
   auto wb = stream->handler->get_wb();
-
-  auto res_str = "<html><head><title>mean</title></head><body><h1>Hello world</h1></body></html>";
-  auto res = make_response(200, res_str);
-
+  auto router = stream->handler->get_sessions()->get_server()->get_router();
+  auto ret = router["/test"](stream, nullptr);
+  auto res = make_response(ret.state_code, ret.body.c_str());
   wb->write(res, strlen(res));
   stream->handler->write_clear();
   free(res);
@@ -2531,6 +2530,7 @@ int HttpServer::run() {
 }
 
 const Config *HttpServer::get_config() const { return config_; }
+const Router &HttpServer::get_router() const { return router_; }
 
 const StatusPage *HttpServer::get_status_page(int status) const {
   switch (status) {
