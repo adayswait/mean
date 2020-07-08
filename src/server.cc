@@ -62,6 +62,7 @@
 #include "util.h"
 #include "tls.h"
 #include "template.h"
+#include "nghttp2_rcbuf.h"
 
 #ifndef O_BINARY
 #  define O_BINARY (0)
@@ -506,6 +507,21 @@ Stream::~Stream() {
     free(http_parser);
   }
 }
+void Stream::http1_fill_requset_header()
+{
+  auto search = this->header_fields.find("Host");
+  if (search != this->header_fields.end())
+  {
+    this->header.host = StringRef{search->second.c_str(),
+                                  search->second.length()};
+  }
+  if (this->http_parser->method)
+  {
+    auto method = llhttp_method_name(static_cast<llhttp_method_t>(
+        this->http_parser->method));
+    this->header.method = StringRef{method, strlen(method)};
+  }
+}
 
 namespace {
 void on_session_closed(Http2Handler *hd, int64_t session_id) {
@@ -915,17 +931,22 @@ char *make_response(int status_code,const char *body)
       malloc(256 + size_content * sizeof(char)));
   memset(header_response, 0, 256 + size_content);
 
-  sprintf(header_response, "HTTP/1.1 %d %s\r\n\
-            Connection: close\r\n\
-            Content-Type: text/plain\r\n\
-            Content-Length: %zu\r\n\r\n%s",
-          status_code, http2::get_reason_phrase(status_code).c_str(), 
+  sprintf(header_response,
+         "HTTP/1.1 %d %s\r\n\
+          Connection: close\r\n\
+          Content-Type: text/plain\r\n\
+          Content-Length: %zu\r\n\r\n%s",
+          status_code, http2::get_reason_phrase(status_code).c_str(),
           size_content, body);
   return header_response;
 }
 
 void prepare_response(Stream *stream)
 {
+  // http_parser_url u{};
+  // if (http_parser_parse_url(uri.c_str(), uri.size(), 0, &u) != 0) {
+  //   return nullptr;
+  // }
   auto wb = stream->handler->get_wb();
   auto router = stream->handler->get_sessions()->get_server()->get_router();
   auto ret = router["/test"](stream, nullptr);
@@ -934,7 +955,7 @@ void prepare_response(Stream *stream)
   stream->handler->write_clear();
   free(res);
 }
-
+nghttp2_mem * mem = nullptr;
 int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
                                           HTTP1_PARSE_STATE state,
                                           const char *data,
@@ -942,12 +963,17 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
 {
   std::map<std::string, std::string>::reverse_iterator iter;
   Stream *stream = static_cast<Stream *>(llptr->data);
-  if (stream->handler->get_config()->verbose)
+  if (!mem)
   {
-    printf("state : %d value : %.*s\n", int(state), int(length), data);
-    fflush(stdout);
+    mem = const_cast<nghttp2_mem *>(
+        stream->handler->get_sessions()->get_server()->get_mem());
   }
 
+  // if (stream->handler->get_config()->verbose)
+  // {
+  //   printf("state : %d value : %.*s\n", int(state), int(length), data);
+  //   fflush(stdout);
+  // }
   switch (state)
   {
   case HTTP1_PARSE_STATE::ON_MESSAGE_BEGIN:
@@ -971,13 +997,25 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
   case HTTP1_PARSE_STATE::ON_STATUS:
     if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_URL)
     {
-      stream->header.path = StringRef{data, length};
+      nghttp2_rcbuf_new(&stream->header.rcbuf.path,
+                        stream->pending_str.length(), mem);
+      memcpy(static_cast<void *>(&stream->header.rcbuf.path->base),
+             stream->pending_str.c_str(),
+             stream->pending_str.length());
+      stream->header.path = StringRef{&stream->header.rcbuf.path->base,
+                                      stream->pending_str.length()};
     }
     return HPE_OK;
   case HTTP1_PARSE_STATE::ON_HEADER_FIELD:
     if (stream->http_parse_state == HTTP1_PARSE_STATE::ON_URL)
     {
-      stream->header.path = StringRef{data, length};
+      nghttp2_rcbuf_new(&stream->header.rcbuf.path,
+                        stream->pending_str.length(), mem);
+      memcpy(static_cast<void *>(&stream->header.rcbuf.path->base),
+             stream->pending_str.c_str(),
+             stream->pending_str.length());
+      stream->header.path = StringRef{&stream->header.rcbuf.path->base,
+                                      stream->pending_str.length()};
       stream->http_parse_state = HTTP1_PARSE_STATE::ON_HEADER_FIELD;
       stream->pending_field = std::string(data, length);
     }
@@ -1021,6 +1059,9 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
     {
       return -1;
     }
+    
+    stream->http1_fill_requset_header();
+
     if (stream->handler->get_config()->verbose)
     {
       for (iter = stream->header_fields.rbegin();
@@ -1029,7 +1070,10 @@ int Http2Handler::on_http1_parse_callback(llhttp_t *llptr,
       {
         std::cout << iter->first << " : " << iter->second << std::endl;
       }
+      std::cout << "Method : " << stream->header.method << std::endl;
+      std::cout << "Path : " << stream->header.path << std::endl;
     }
+
     return HPE_OK;
   case HTTP1_PARSE_STATE::ON_BODY:
     break;
@@ -2531,6 +2575,7 @@ int HttpServer::run() {
 
 const Config *HttpServer::get_config() const { return config_; }
 const Router &HttpServer::get_router() const { return router_; }
+const nghttp2_mem *HttpServer::get_mem() const { return &mem_; }
 
 const StatusPage *HttpServer::get_status_page(int status) const {
   switch (status) {

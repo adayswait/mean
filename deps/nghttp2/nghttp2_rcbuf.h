@@ -43,7 +43,9 @@ struct nghttp2_rcbuf {
   /* Reference count */
   int32_t ref;
 };
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * Allocates nghttp2_rcbuf object with |size| as initial buffer size.
  * When the function succeeds, the reference count becomes 1.
@@ -76,5 +78,9 @@ int nghttp2_rcbuf_new2(nghttp2_rcbuf **rcbuf_ptr, const uint8_t *src,
  * Frees |rcbuf| itself, regardless of its reference cout.
  */
 void nghttp2_rcbuf_del(nghttp2_rcbuf *rcbuf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NGHTTP2_RCBUF_H */

@@ -179,6 +179,7 @@ struct Stream {
   HTTP1_PARSE_STATE http_parse_state;
   std::string pending_str;
   std::string pending_field;
+  void http1_fill_requset_header();
   ~Stream();
 };
 
@@ -291,12 +292,31 @@ private:
   {
     _routing_table[path] = handler;
   }
+  void get(std::string post, router_callback handler);
+  void post(std::string post, router_callback handler);
   std::unordered_map<std::string, router_callback> _routing_table;
   router_callback route404 = [](Stream *,
                                 Http2Handler *) -> RouterRet {
     return { 404, http2::get_reason_phrase(404).c_str() };
   };
 };
+
+static inline void *mean_malloc(size_t size, void *user_data)
+{
+  return malloc(size);
+}
+static inline void mean_free(void *ptr, void *user_data)
+{
+  free(ptr);
+}
+static inline void *mean_calloc(size_t nmemb, size_t size, void *user_data)
+{
+  return calloc(nmemb, size);
+}
+static inline void *mean_realloc(void *ptr, size_t size, void *user_data)
+{
+  return realloc(ptr, size);
+}
 
 class HttpServer {
 public:
@@ -306,11 +326,13 @@ public:
   const Config *get_config() const;
   const StatusPage *get_status_page(int status) const;
   const Router& get_router() const;
+  const nghttp2_mem *get_mem() const;
 
 private:
   std::vector<StatusPage> status_pages_;
   const Config *config_;
   const Router router_;
+  nghttp2_mem mem_ = {nullptr, mean_malloc, mean_free, mean_calloc, mean_realloc};
 };
 
 ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,

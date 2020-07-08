@@ -88,6 +88,7 @@ endif()
 include_directories(
     deps/llhttp/include/
     deps/url-parser/
+    deps/nghttp2/
     deps/nghttp2/include/
     deps/nghttpd/include/
     include/
