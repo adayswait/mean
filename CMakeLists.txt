@@ -10,6 +10,10 @@ project(${PROJECT_NAME} VERSION ${PROJECT_VERSION})
 
 set(CMAKE_CXX_STANDARD 14)
 
+include(CheckIncludeFiles)
+include(CheckFunctionExists)
+include(CheckLibraryExists)
+
 function(extract_valid_c_flags varname)
   set(valid_flags)
   foreach(flag IN LISTS ARGN)
@@ -50,40 +54,39 @@ check_include_file("sys/time.h"     HAVE_SYS_TIME_H)
 check_include_file("syslog.h"       HAVE_SYSLOG_H)
 check_include_file("time.h"         HAVE_TIME_H)
 check_include_file("unistd.h"       HAVE_UNISTD_H)
+check_include_files(dlfcn.h         HAVE_DLFCN_H)
+check_include_files(memory.h        HAVE_MEMORY_H)
+check_include_files(poll.h          HAVE_POLL_H)
+check_include_files(port.h          HAVE_PORT_H)
+check_include_files(stdint.h HAVE_STDINT_H)
+check_include_files(stdlib.h HAVE_STDLIB_H)
+check_include_files(strings.h HAVE_STRINGS_H)
+check_include_files(string.h HAVE_STRING_H)
+check_include_files(sys/epoll.h HAVE_SYS_EPOLL_H)
+check_include_files(sys/eventfd.h HAVE_SYS_EVENTFD_H)
+check_include_files(sys/event.h HAVE_SYS_EVENT_H)
+check_include_files(sys/inotify.h HAVE_SYS_INOTIFY_H)
+check_include_files(sys/select.h HAVE_SYS_SELECT_H)
+check_include_files(sys/signalfd.h HAVE_SYS_SIGNALFD_H)
+check_include_files(sys/stat.h HAVE_SYS_STAT_H)
+check_include_files(sys/types.h HAVE_SYS_TYPES_H)
+check_include_files("assert.h;ctype.h;errno.h;float.h;      \
+limits.h;locale.h;math.h;setjmp.h;signal.h;stdarg.h;        \
+stddef.h;stdio.h;stdlib.h;string.h;time.h;" STDC_HEADERS)
+check_include_files("winsock.h" HAVE_WINSOCK_H)
 
-if(HAVE_ARPA_INET_H)
-  add_definitions(-DHAVE_ARPA_INET_H)
-endif()
-if(HAVE_FCNTL_H)
-  add_definitions(-DHAVE_FCNTL_H)
-endif()
-if(HAVE_INTTYPES_H)
-  add_definitions(-DHAVE_INTTYPES_H)
-endif()
-if(HAVE_LIMITS_H)
-  add_definitions(-DHAVE_LIMITS_H)
-endif()
-if(HAVE_NETDB_H)
-  add_definitions(-DHAVE_NETDB_H)
-endif()
-if(HAVE_PWD_H)
-  add_definitions(-DHAVE_PWD_H)
-endif()
-if(HAVE_SYS_SOCKET_H)
-  add_definitions(-DHAVE_SYS_SOCKET_H)
-endif()
-if(HAVE_SYS_TIME_H)
-  add_definitions(-DHAVE_SYS_TIME_H)
-endif()
-if(HAVE_SYSLOG_H)
-  add_definitions(-DHAVE_SYSLOG_H)
-endif()
-if(HAVE_TIME_H)
-  add_definitions(-DHAVE_TIME_H)
-endif()
-if(HAVE_UNISTD_H)
-  add_definitions(-DHAVE_UNISTD_H)
-endif()
+# check functions
+check_function_exists(clock_gettime HAVE_CLOCK_GETTIME)
+check_function_exists(epoll_ctl HAVE_EPOLL_CTL)
+check_function_exists(eventfd HAVE_EVENTFD)
+check_function_exists(floor HAVE_FLOOR)
+check_function_exists(inotify_init HAVE_INOTIFY_INIT)
+check_function_exists(kqueue HAVE_KQUEUE)
+check_function_exists(nanosleep HAVE_NANOSLEEP)
+check_function_exists(poll HAVE_POLL)
+check_function_exists(port_create HAVE_PORT_CREATE)
+check_function_exists(select HAVE_SELECT)
+check_function_exists(signalfd HAVE_SIGNALFD)
 
 include_directories(
     deps/llhttp/include/
@@ -95,8 +98,12 @@ include_directories(
     #deps/mbedtls/
 )
 
+configure_file(include/config.h.cmake.in 
+${CMAKE_CURRENT_SOURCE_DIR}/include/config.h)
+
+add_definitions(-DHAVE_CONFIG_H)
+
 set(MEAN_LINK_LIB
-    ev
     ssl
     crypto
     pthread
@@ -109,6 +116,9 @@ set(MEAN_SRC
     deps/llhttp/src/http.c
 
     deps/url-parser/url_parser.c
+
+    deps/libev/ev.c
+    deps/libev/event.c
 
     deps/nghttp2/nghttp2_pq.c
     deps/nghttp2/nghttp2_map.c
@@ -146,7 +156,7 @@ set(MEAN_SRC
     deps/nghttpd/nghttp2_gzip.c
 
     deps/nghttpd/tls.cc
-
+    
     src/server.cc
     src/main.cc
     src/router.cc
@@ -165,3 +175,13 @@ target_link_libraries(mean
     ${MEAN_LINK_LIB}
     "-Xlinker \"-)\""
 )
+
+if(WIN32)
+	list(APPEND platformlibs "wsock32.lib" "ws2_32.lib")
+endif()
+
+if(MSVC)
+	set_target_properties(${libname} PROPERTIES
+		COMPILE_FLAGS "/wd4244 /wd4996")
+endif()
+
