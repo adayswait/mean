@@ -96,6 +96,7 @@ include_directories(
     deps/nghttpd/include/
     include/
     #deps/mbedtls/
+    deps/libev/
 )
 
 configure_file(include/config.h.cmake.in 
@@ -146,6 +147,7 @@ set(MEAN_SRC
     deps/nghttp2/nghttp2_callbacks.c
     deps/nghttp2/nghttp2_mem.c
     deps/nghttp2/nghttp2_http.c
+    deps/nghttp2/nghttp2_ksl.c
     deps/nghttp2/nghttp2_rcbuf.c
     deps/nghttp2/nghttp2_debug.c
 
